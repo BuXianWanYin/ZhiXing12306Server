@@ -6,14 +6,16 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const serverHost = 'http://localhost:3000';
+const serverHost = 'localhost:3000';
+const imageDir = path.join(__dirname, 'image');
+const iconDir = path.join(imageDir, 'icon');
+
+
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// 确保 image 目录存在
-const imageDir = path.join(__dirname, 'image');
 if (!fs.existsSync(imageDir)) {
   fs.mkdirSync(imageDir);
 }
@@ -35,8 +37,9 @@ const secret = 'c6de62c8472f8764069f68ab5067c266';
 
 // 登录接口
 app.post('/api/user/login', async (req, res) => {
-  const { code, avatar, nickname } = req.body;
+  const { code, userInfo } = req.body;
   if (!code) return res.json({ success: false, msg: '缺少code' });
+  if (!userInfo) return res.json({ success: false, msg: '缺少用户信息' });
 
   // 1. 用code换openid
   const wxUrl = `https://api.weixin.qq.com/sns/jscode2session?appid=${appid}&secret=${secret}&js_code=${code}&grant_type=authorization_code`;
@@ -51,30 +54,40 @@ app.post('/api/user/login', async (req, res) => {
       // 新用户注册
       await pool.query(
         'INSERT INTO user (openid, nickname, avatar, create_time) VALUES (?, ?, ?, NOW())',
-        [openid, nickname, avatar]
+        [openid, userInfo.nickName, userInfo.avatarUrl]
       );
     } else {
       // 更新头像昵称
       await pool.query(
         'UPDATE user SET nickname=?, avatar=? WHERE openid=?',
-        [nickname, avatar, openid]
+        [userInfo.nickName, userInfo.avatarUrl, openid]
       );
     }
     // 查询最新用户信息
     const [userRows] = await pool.query('SELECT * FROM user WHERE openid = ?', [openid]);
     const user = userRows[0];
- // 拼接完整头像地址
-  let avatar = user.avatar;
-  if (avatar && !avatar.startsWith('http')) {
-    avatar = `${serverHost}${avatar}`;
-  }
+    
+    // 拼接完整头像地址
+    let avatarUrl = user.avatar;
+    if (avatarUrl && !avatarUrl.startsWith('http')) {
+      avatarUrl = `${serverHost}${avatarUrl}`;
+    }
+
     res.json({
       success: true,
       openid,
-      nickname: user.nickname,
-      avatar: user.avatar
+      userInfo: {
+        nickName: user.nickname,
+        avatarUrl: avatarUrl,
+        gender: userInfo.gender || 0,
+        province: userInfo.province || '',
+        city: userInfo.city || '',
+        country: userInfo.country || '',
+        language: userInfo.language || 'zh_CN'
+      }
     });
   } catch (err) {
+    console.error('登录处理错误:', err);
     res.json({ success: false, msg: '服务异常', error: err.message });
   }
 });
@@ -97,7 +110,7 @@ app.post('/api/user/uploadAvatar', upload.single('avatar'), async (req, res) => 
   const { uid } = req.body;
   if (!uid || !req.file) return res.json({ success: false, msg: '缺少参数' });
 
-  const avatarUrl = `${serverHost}/image/${req.file.filename}`;
+  const avatarUrl = `http://${serverHost}/image/${req.file.filename}`;
   await pool.query('UPDATE user SET avatar=? WHERE openid=?', [avatarUrl, uid]);
   res.json({ success: true, avatarUrl });
 });
@@ -114,6 +127,26 @@ app.post('/api/user/updateNickname', async (req, res) => {
   res.json({ success: true });
 });
 
-app.listen(3000, () => {
-  console.log('Server running at http://localhost:3000');
+//获取所有 icon 图片 URL 的接口
+app.get('/api/icons', (req, res) => {
+  fs.readdir(iconDir, (err, files) => {
+    if (err) {
+      return res.status(500).json({ success: false, msg: '读取icon目录失败', error: err.message });
+    }
+    // 只保留图片文件
+    const icons = {};
+    files.forEach(file => {
+      const ext = path.extname(file).toLowerCase();
+      if (['.png', '.jpg', '.jpeg', '.gif', '.svg'].includes(ext)) {
+        // 去掉扩展名作为 key
+        const key = path.basename(file, ext);
+        icons[key] = `http://${serverHost}/image/icon/${file}`;
+      }
+    });
+    res.json(icons);
+  });
 });
+
+app.listen(3000, '0.0.0.0', () => {
+  console.log('服务运行在 http://localhost:3000');
+}); 
